@@ -1,0 +1,26 @@
+[
+  {
+    "name": "minimap2",
+    "n_reads": 500,
+    "elapsed_ms": 18.019122013356537,
+    "throughput_reads_per_sec": 27748.3,
+    "n_aligned": 500,
+    "score_mean": 285.58,
+    "score_max": 300.0,
+    "tool": "minimap2",
+    "version": "2.26"
+  },
+  {
+    "name": "hybaligner (sw-only)",
+    "n_reads": 500,
+    "elapsed_ms": 697.598937957082,
+    "throughput_reads_per_sec": 717.3,
+    "n_aligned": 500,
+    "score_mean": 14.072,
+    "score_max": 17.0,
+    "tool": "hybaligner",
+    "mode": "sw-only",
+    "gpu_batches": 1,
+    "band_width": 50
+  }
+]

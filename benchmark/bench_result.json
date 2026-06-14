@@ -1,0 +1,39 @@
+[
+  {
+    "name": "minimap2",
+    "n_reads": 500,
+    "elapsed_ms": 10.392780997790396,
+    "throughput_reads_per_sec": 48110.3,
+    "n_aligned": 500,
+    "score_mean": 285.58,
+    "score_max": 300.0,
+    "tool": "minimap2",
+    "version": "2.26"
+  },
+  {
+    "name": "hybaligner (streams)",
+    "n_reads": 500,
+    "elapsed_ms": 740.0643349974416,
+    "throughput_reads_per_sec": 675.9,
+    "n_aligned": 500,
+    "score_mean": 13.192,
+    "score_max": 14.0,
+    "tool": "hybaligner",
+    "mode": "streams",
+    "gpu_batches": 1,
+    "band_width": 50
+  },
+  {
+    "name": "hybaligner (seed)",
+    "n_reads": 500,
+    "elapsed_ms": 538.9635700266808,
+    "throughput_reads_per_sec": 928.5,
+    "n_aligned": 500,
+    "score_mean": 14.52,
+    "score_max": 18.0,
+    "tool": "hybaligner",
+    "mode": "seed",
+    "gpu_batches": 1,
+    "band_width": 50
+  }
+]

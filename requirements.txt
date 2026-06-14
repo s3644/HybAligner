@@ -1,0 +1,6 @@
+numpy>=1.24
+psutil>=5.9
+
+# Optional: better GPU integration
+# cupy-cuda12x>=13.0
+# pycuda>=2024.1

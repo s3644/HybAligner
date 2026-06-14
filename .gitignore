@@ -1,0 +1,25 @@
+# Build artifacts
+build/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+
+# IDE
+.vscode/
+.idea/
+
+# Data files
+*.fastq
+*.fasta
+*.fa
+*.fq
+*.sam
+*.bam
+
+# OS
+.DS_Store
+Thumbs.db
