@@ -25,9 +25,11 @@ pub mod align;
 pub mod cuda;
 pub mod encode;
 pub mod fastq;
+pub mod seed;
 
 // Re-exports
 pub use align::{AlignParams, FastAligner};
 pub use cuda::{AlignResult, CudaKernel};
 pub use encode::{encode_from_fastq, encode_reads, encode_reference, encode_reference_bytes};
 pub use fastq::FastqFile;
+pub use seed::{best_anchor, Anchor, SeedIndex};

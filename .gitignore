@@ -1,6 +1,9 @@
 # Build artifacts
 build/
 
+# Rust
+rust_fast_align/target/
+
 # Python
 __pycache__/
 *.pyc

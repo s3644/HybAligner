@@ -57,6 +57,14 @@ struct Cli {
     /// Quiet mode — only print JSON
     #[arg(short = 'q', long)]
     quiet: bool,
+
+    /// Use seeded alignment for genome-scale references
+    #[arg(long)]
+    seeded: bool,
+
+    /// Anchor window half-width for seeded mode (default: 5000)
+    #[arg(long, default_value = "5000")]
+    anchor_window: usize,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -136,22 +144,103 @@ fn main() -> anyhow::Result<()> {
         block_size: cli.block_size,
     };
 
-    let t_gpu = Instant::now();
-    let result = fa.align(
-        &reads_bytes,
-        &ref_bytes,
-        n_reads,
-        read_len,
-        ref_len,
-        params,
-    )?;
-    let gpu_ms = t_gpu.elapsed().as_secs_f64() * 1000.0;
+    let (scores, _read_starts, _read_ends, _ref_starts, _ref_ends, gpu_ms) =
+        if cli.seeded {
+            // --- Seeded path: build index, find anchors, align windows ---
+            use hyb_align::seed::{best_anchor, SeedIndex};
+
+            let t_idx = Instant::now();
+            let seed_idx = SeedIndex::build(&ref_bytes, 15, 10);
+            let idx_ms = t_idx.elapsed().as_secs_f64() * 1000.0;
+            if !cli.quiet {
+                eprintln!("  Seed index: {} keys ({:.0} ms)", seed_idx.len(), idx_ms);
+            }
+
+            let t_seed = Instant::now();
+            let t_gpu_seeded = Instant::now();
+            let mut scores_arr = vec![0.0f32; n_reads];
+            let mut rs_arr = vec![0i32; n_reads];
+            let mut re_arr = vec![0i32; n_reads];
+            let mut fs_arr = vec![0i32; n_reads];
+            let mut fe_arr = vec![0i32; n_reads];
+            let mut n_seeded = 0usize;
+
+            for i in 0..n_reads {
+                let read_start_byte = i * read_len;
+                let read_end_byte = read_start_byte + read_len;
+                let read_slice = &reads_bytes[read_start_byte..read_end_byte];
+
+                // Trim trailing Ns to get actual read length
+                let actual_len = read_slice
+                    .iter()
+                    .rposition(|&b| b != b'N')
+                    .map_or(0, |p| p + 1);
+                if actual_len == 0 {
+                    continue;
+                }
+                let read_data = &read_slice[..actual_len];
+
+                let anchors = seed_idx.find_anchors(read_data);
+                if anchors.is_empty() {
+                    continue;
+                }
+                n_seeded += 1;
+
+                let best = match best_anchor(&anchors) {
+                    Some(a) => a,
+                    None => continue,
+                };
+
+                // Extract ref window around anchor
+                let aw = cli.anchor_window as i64;
+                let ref_start = (best.ref_pos as i64 - aw).max(0) as usize;
+                let ref_end = (best.ref_pos as i64 + actual_len as i64 + aw)
+                    .min(ref_len as i64) as usize;
+                let ref_window = &ref_bytes[ref_start..ref_end];
+
+                // Align read against ref window
+                match fa.align(read_data, ref_window, 1, actual_len, ref_window.len(), params.clone()) {
+                    Ok(r) => {
+                        scores_arr[i] = r.scores[0];
+                        rs_arr[i] = r.read_start[0];
+                        re_arr[i] = r.read_end[0];
+                        fs_arr[i] = ref_start as i32 + r.ref_start[0];
+                        fe_arr[i] = ref_start as i32 + r.ref_end[0];
+                    }
+                    Err(_) => continue,
+                }
+            }
+
+            if !cli.quiet {
+                eprintln!(
+                    "  Seeded: {} reads ({:.0} ms)",
+                    n_seeded,
+                    t_seed.elapsed().as_secs_f64() * 1000.0
+                );
+            }
+
+            let gpu_ms = t_gpu_seeded.elapsed().as_secs_f64() * 1000.0;
+            (scores_arr, rs_arr, re_arr, fs_arr, fe_arr, gpu_ms)
+        } else {
+            // --- Standard path: full-reference banded SW ---
+            let t_gpu = Instant::now();
+            let result = fa.align(
+                &reads_bytes,
+                &ref_bytes,
+                n_reads,
+                read_len,
+                ref_len,
+                params,
+            )?;
+            let gpu_ms = t_gpu.elapsed().as_secs_f64() * 1000.0;
+            (result.scores, result.read_start, result.read_end, result.ref_start, result.ref_end, gpu_ms)
+        };
 
     let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
-    let n_aligned = result.scores.iter().filter(|&&s| s > 0.0).count();
+    let n_aligned = scores.iter().filter(|&&s| s > 0.0).count();
     let score_mean: f64 = if n_aligned > 0 {
-        result.scores.iter().filter(|&&s| s > 0.0).map(|&s| s as f64).sum::<f64>()
+        scores.iter().filter(|&&s| s > 0.0).map(|&s| s as f64).sum::<f64>()
             / n_aligned as f64
     } else {
         0.0
@@ -159,9 +248,11 @@ fn main() -> anyhow::Result<()> {
     let throughput = n_reads as f64 / (total_ms / 1000.0);
 
     if cli.json {
+        let score_max = scores.iter().cloned().fold(0.0f32, f32::max);
         let json = serde_json::json!({
             "tool": "hyb-align-rs",
-            "version": "0.1.0",
+            "version": "0.2.0",
+            "mode": if cli.seeded { "seeded" } else { "standard" },
             "n_reads": n_reads,
             "read_len": read_len,
             "ref_len": ref_len,
@@ -169,7 +260,7 @@ fn main() -> anyhow::Result<()> {
             "n_aligned": n_aligned,
             "pct_aligned": if n_reads > 0 { 100.0 * n_aligned as f64 / n_reads as f64 } else { 0.0 },
             "score_mean": score_mean,
-            "score_max": result.scores.iter().cloned().fold(0.0f32, f32::max),
+            "score_max": score_max,
             "total_ms": total_ms,
             "gpu_ms": gpu_ms,
             "parse_ms": fq_ms + ref_ms,
@@ -185,12 +276,15 @@ fn main() -> anyhow::Result<()> {
         println!("  Reads:    {}", n_reads);
         println!("  Ref:      {} bp", ref_len);
         println!("  Band:     ±{}", cli.band_width);
+        if cli.seeded {
+            println!("  Mode:     seeded (anchor_window=±{})", cli.anchor_window);
+        }
         println!("  ─────────────────────────────────────────────");
         println!("  Aligned:  {}/{} ({:.1}%)", n_aligned, n_reads,
                  if n_reads > 0 { 100.0 * n_aligned as f64 / n_reads as f64 } else { 0.0 });
         println!("  Score:    mean={:.1}, max={:.0}",
                  score_mean,
-                 result.scores.iter().cloned().fold(0.0f32, f32::max));
+                 scores.iter().cloned().fold(0.0f32, f32::max));
         println!("  ─────────────────────────────────────────────");
         println!("  Total:    {:.1} ms", total_ms);
         println!("  GPU:      {:.1} ms", gpu_ms);
