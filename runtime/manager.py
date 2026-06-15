@@ -310,12 +310,12 @@ def run_pipeline(
         ref_len=len(ref_seq),
     )
 
-    # --- Build reference minimizer index (if seeding enabled) ---
+    # --- Build reference minimizer index (only if seeding enabled) ---
     ref_index: Optional[RefMinimizerIndex] = None
     seeder: Optional[GPUSeeder] = None
     seed_build_ms = 0.0
 
-    if use_seed:
+    if use_seed and not use_fast:
         seeder = GPUSeeder(k=kmer, w=window)
         t_seed = time.perf_counter()
         ref_index = seeder.build_ref_index([ref_seq], len(ref_seq))

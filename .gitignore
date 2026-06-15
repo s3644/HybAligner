@@ -18,6 +18,11 @@ dist/
 *.fa
 *.fq
 *.sam
+*.fastq.gz
+*.fasta.gz
+*.fa.gz
+*.fq.gz
+data/
 *.bam
 
 # OS

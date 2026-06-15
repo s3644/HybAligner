@@ -123,10 +123,10 @@ def run_minimap2(fastq_path: str, ref_path: str) -> BenchResult:
     """Run minimap2 and parse PAF output for scores."""
     t0 = time.perf_counter()
 
-    # Run minimap2 with -c to get CIGAR, -t 1 for single thread fairness
+    # Run minimap2 with -c to get CIGAR, -t 16 for multi-core
     result = subprocess.run(
         [
-            "minimap2", "-c", "-t", "1",
+            "minimap2", "-c", "-t", "16",
             ref_path, fastq_path,
         ],
         capture_output=True,
@@ -174,7 +174,7 @@ def run_minimap2(fastq_path: str, ref_path: str) -> BenchResult:
 
 
 # ---------------------------------------------------------------------------
-# HybAligner runner
+# HybAligner runner (standard scheduler-based)
 # ---------------------------------------------------------------------------
 def run_hybaligner(
     fastq_path: str,
@@ -214,6 +214,47 @@ def run_hybaligner(
             "tool": "hybaligner",
             "mode": mode,
             "gpu_batches": summary["gpu_batches"],
+            "band_width": summary["band_width"],
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# HybAligner FastPipeline runner (zero-overhead fast path)
+# ---------------------------------------------------------------------------
+_fast_pipeline: 'FastPipeline | None' = None  # persistent across runs
+
+def run_hybaligner_fast(
+    fastq_path: str,
+    ref_path: str,
+    band_width: int = 50,
+) -> BenchResult:
+    """Run HybAligner via FastPipeline (minimal Python overhead)."""
+    from gpu.fast_align import FastPipeline
+    global _fast_pipeline
+
+    t0 = time.perf_counter()
+    if _fast_pipeline is None:
+        _fast_pipeline = FastPipeline()
+    summary = _fast_pipeline.run(
+        fastq_path, ref_path,
+        band_width=band_width,
+    )
+    elapsed = (time.perf_counter() - t0) * 1000.0
+
+    return BenchResult(
+        name="hybaligner (fast)",
+        n_reads=summary["n_reads"],
+        read_len=0,
+        ref_len=summary["ref_len"],
+        elapsed_ms=elapsed,
+        throughput_reads_per_sec=summary["throughput_reads_per_sec"],
+        n_aligned=summary["n_aligned"],
+        score_mean=summary["score_mean"],
+        score_max=summary["score_max"],
+        extra={
+            "tool": "hybaligner",
+            "mode": "fast",
             "band_width": summary["band_width"],
         },
     )
@@ -318,6 +359,10 @@ def main():
         "--skip-minimap2", action="store_true",
         help="Skip minimap2 baseline (hybaligner only)",
     )
+    parser.add_argument(
+        "--fast", action="store_true",
+        help="Also run optimized FastPipeline (minimal Python overhead)",
+    )
     args = parser.parse_args()
 
     init_logger(format="human")
@@ -388,6 +433,23 @@ def main():
                 results.append(r_hyb_sync)
             except Exception as e:
                 print(f"  HybAligner (sync) FAILED: {e}")
+
+        # FastPipeline (optimized, minimal overhead)
+        if args.fast:
+            print("\nRunning HybAligner FastPipeline (optimized)...")
+            try:
+                r_fast = run_hybaligner_fast(
+                    fastq_path, fasta_path,
+                    band_width=args.band_width,
+                )
+                results.append(r_fast)
+                print(f"  FastPipeline: {r_fast.elapsed_ms:.1f} ms, "
+                      f"{r_fast.throughput_reads_per_sec:.1f} reads/s, "
+                      f"{r_fast.n_aligned} aligned")
+            except Exception as e:
+                print(f"  FastPipeline FAILED: {e}")
+                import traceback
+                traceback.print_exc()
 
         # Report
         json_results = print_report(results)

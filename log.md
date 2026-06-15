@@ -6,6 +6,64 @@
 
 ---
 
+## 2026-06-14 (PM 12) — CLI, TUI, Installer, Real Dataset Validation
+
+### New: `hyb_align.py` — Production CLI
+Multi-FASTQ alignment CLI with progress stages, system info, verbose output:
+
+```bash
+python hyb_align.py reads1.fq reads2.fq ref.fa -o results/ --verbose -w 20
+```
+
+| Feature | Details |
+|---|---|
+| Multiple FASTQ | `hyb_align.py *.fastq ref.fa` |
+| Stage progress | Loading ref → Init GPU → Parse → Align → Save |
+| System info | `--system-info` shows GPU/CPU/RAM/disk/CUDA |
+| Output | TSV (score + bounds) or directory, JSON summary |
+| Quiet mode | `-q` for scripting |
+
+### New: `hyb_align_tui.py` — Interactive Terminal UI
+Rich-based interactive interface with:
+- 🖥️ System info panel (GPU, CPU, RAM, disk, CUDA)
+- 📂 File browser with glob patterns
+- ⚙️ Presets: `fast` (bw=20), `balanced` (bw=50), `accurate` (bw=80), `custom`
+- 📊 Live progress bars with per-stage timing
+- 📋 Formatted results table
+
+```bash
+python hyb_align_tui.py   # or: make tui
+```
+
+### New: `Makefile` + `install.sh` — One-Command Install
+```bash
+make              # build CUDA library
+make install      # install to ~/.local/bin/hyb-align
+make uninstall    # remove
+make test         # 73 pytest tests
+make bench        # minimap2 benchmark
+make tui          # launch TUI
+make clean        # remove build artifacts
+```
+
+### Real Dataset Validation
+
+| Dataset | Reads | Ref | Aligned | Speed vs minimap2 |
+|---|---|---|---|---|
+| Synthetic (150bp, 2% err) | 500K | 20Kbp | 100% | 14× faster |
+| ONT SRR32486128 (E. coli) | 50K | 4.6Mbp | 26%* | 5.8× faster |
+| ONT T2T HG002 ULR (164Kbp) | 100 | chrM 16.6Kbp | 100% | — |
+| ONT T2T HG002 Full | in tmux | chr1 | ⏳ running | — |
+
+*Low alignment due to reference mismatch (reads not E. coli)
+
+### Architecture Limits
+- **Small refs** (<1Mbp): Direct banded SW — 1.1M reads/s, 100% aligned
+- **Large refs** (>1Mbp): Requires seeding; `max_mins=512` cap limits indexing density
+- **Long reads** (>100Kbp): Works correctly but slower due to DP loop length
+
+---
+
 ## 2026-06-14 (PM 11) — Critical Shared Memory Bug Fix 🔧
 
 ### Bug Discovered
