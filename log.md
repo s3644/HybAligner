@@ -2,7 +2,7 @@
 
 **Project:** Hybrid CPU-GPU Sequence Aligner for DGX Spark  
 **Repository:** `/home/jukrapope/Documents/HybAligner`  
-**Last Updated:** 2026-06-15
+**Last Updated:** 2026-06-15 (PM 8)
 
 ---
 

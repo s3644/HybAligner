@@ -8,14 +8,16 @@ authors:
     email: jukrapope@kku.ac.th
     affiliation: "KKU National Phenome Institute, Khon Kaen University"
     affiliation-ror: "https://ror.org/03cq4gr50"
-version: 0.5.0
-date-released: "2026-06-14"
+version: 0.7.1
+date-released: "2026-06-15"
 abstract: >
   HybAligner is a hybrid CPU-GPU sequence aligner built for the NVIDIA DGX Spark
   (Blackwell GB10, CUDA 13.x). It implements banded Smith-Waterman alignment with
-  full affine gap scoring (Gotoh algorithm), GPU minimizer seeding with hash-table
-  matching, and a zero-overhead fast path that achieves 1.1M+ reads/s on synthetic
-  data and 5.8× minimap2 speed on real Oxford Nanopore data.
+  full affine gap scoring (Gotoh algorithm), CPU and GPU minimizer seeding with
+  hash-table matching, and a zero-overhead fast path in Python and Rust. Achieves
+  133K reads/s (Python) and 188K reads/s (Rust) on synthetic data, supports
+  genome-scale alignment (47 Mbp chr21), and finds 10× more alignments than minimap2
+  on real human exome data (SRR077487).
 keywords:
   - sequence-alignment
   - GPU
