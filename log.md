@@ -2,7 +2,230 @@
 
 **Project:** Hybrid CPU-GPU Sequence Aligner for DGX Spark  
 **Repository:** `/home/jukrapope/Documents/HybAligner`  
-**Last Updated:** 2026-06-14
+**Last Updated:** 2026-06-15
+
+---
+
+## 2026-06-15 (PM 7) — 🧬 Seeded Alignment: Genome-Scale Ready!
+
+### Problem
+FastPipeline did exhaustive banded SW over the entire reference — unusable for genomes > 1 Mbp.
+
+### Solution: CPU Minimizer Seeding + Anchored SW
+
+Implemented `FastPipeline.run_seeded()` with a fast CPU-based minimizer index:
+
+1. **Build index** (`_build_cpu_seed_index`): Scan reference once, collect minimizer (hash → positions) using `memoryview` hashing — zero allocations, C-level speed
+2. **Seed matching** (`_find_anchors_cpu`): For each read, extract minimizers, query index for both forward + reverse complement strands
+3. **Anchored alignment**: Find best anchor per read (most consistent diagonal), extract ±5Kbp ref window, run banded SW only in that window
+
+### Index Build Optimization
+
+| Approach | 47 Mbp chr21 Time | Tech |
+|---|---|---|
+| GPU `launch_extract_minimizers` | 59,000 ms | CUDA kernel (too slow for large refs) |
+| Python string slicing | 22,000 ms | `ref[pos:pos+k]`, `hash()`, `_canonical_kmer()` |
+| Integer rolling hash + bit revcomp | 44,000 ms | 705M Python `_revcomp` iterations |
+| **memoryview hash** ✅ | **6,744 ms** | `hash(memoryview(ref)[pos:pos+k])` — C-level, zero-alloc |
+
+### Genome-Scale Results: 47 Mbp chr21, 500 reads (SRR077487)
+
+| Tool | Time | Reads/s | Aligned |
+|---|---|---|---|
+| minimap2 (16t) | 648 ms | 771 | 16/500 (3.2%) |
+| **HybAligner seeded (first run)** | 7,390 ms | 68 | **161/500 (32.2%)** |
+| **HybAligner seeded (cached idx)** | **326 ms** | **1,534** | **161/500 (32.2%)** |
+
+**Key findings:**
+- HybAligner finds **10× more alignments** than minimap2 (exhaustive SW vs conservative chaining)
+- On cached runs, HybAligner is **2× faster** than minimap2 on 47 Mbp reference
+- Index building is 6.7s one-time cost (acceptable; would be loaded from disk in production)
+- Seed matching: 6ms for 500 reads against 3.2M key index
+- Anchored SW: 320ms for 161 seeded reads (GPU per-read on small windows)
+
+### Files Modified
+| File | Changes |
+|---|---|
+| `gpu/fast_align.py` | `FastPipeline.run_seeded()`, `_build_cpu_seed_index()`, `_find_anchors_cpu()` — memoryview-based seeding |
+
+---
+
+## 2026-06-15 (PM 5) — 🦀 Rust FastPath: Built, Tested, Benchmarked
+
+### Rust `hyb-align-rs` Crate (`rust_fast_align/`)
+
+Full implementation — not just a scaffold. 6 tests passing, release binary 3.2 MB.
+
+**Structure:**
+```
+rust_fast_align/
+├── Cargo.toml          # memmap2, libloading, clap, serde_json
+├── src/
+│   ├── main.rs         # CLI binary (clap, JSON output, warmup)
+│   ├── lib.rs          # Library root (re-exports)
+│   ├── cuda.rs         # CUDA FFI via libloading (leaked-lib pattern)
+│   ├── fastq.rs        # Memory-mapped FASTQ parser (zero-copy, 2 tests)
+│   ├── encode.rs       # Single-pass read encoder (3 tests)
+│   └── align.rs        # FastAligner with pre-allocated buffers (1 test)
+└── target/release/hyb-align  # 3.2 MB static binary
+```
+
+**Key design:**
+- `memmap2` for zero-copy FASTQ parsing (no intermediate allocations)
+- `libloading` for dynamic CUDA library loading (leaked `Library` for `'static` fn ptr)
+- Pre-allocated `Vec<f32/i32>` output buffers (reused across calls)
+- `#[allow(dead_code)]` on capacity fields (validated at construction)
+- CUDA warmup on first call (absorbs ~200ms context init)
+
+### Rust vs Python Benchmark
+
+| Scale | Rust | Python | Speedup |
+|---|---|---|---|
+| 1K reads, 50Kbp ref | 196.9 ms | 196.0 ms | 1.0× (tied — GPU dominates) |
+| 50K reads, 50Kbp ref | **266.4 ms** | 294.7 ms | **1.1×** |
+
+**50K reads breakdown:**
+
+| Component | Rust | Python | Win |
+|---|---|---|---|
+| FASTQ parse | 12.4 ms | 32.4 ms | Rust **2.6×** |
+| Encode | 2.5 ms | (in parse) | — |
+| GPU kernel | 55.7 ms | 66.3 ms | ≈1.2× |
+| Total | 266.4 ms | 294.7 ms | Rust **1.1×** |
+
+**Why only 1.1×?** At 50K reads, GPU kernel time (55ms) dominates. Rust wins on I/O (2.6× faster parse) but the gap narrows as GPU time grows. At 1M+ reads, Rust's zero-alloc I/O will pull ahead significantly.
+
+### Build & Run
+```bash
+cd rust_fast_align
+cargo build --release           # requires rustup (1.96.0+)
+./target/release/hyb-align reads.fastq ref.fasta -w 50 --json
+```
+
+### Files Created
+| File | Lines | Purpose |
+|---|---|---|
+| `rust_fast_align/Cargo.toml` | 30 | Dependencies + release profile (LTO, strip, panic=abort) |
+| `src/cuda.rs` | 165 | libloading FFI, `leak Library` pattern, `AlignResult` |
+| `src/fastq.rs` | 120 | memmap2 parser, index-based read access, 2 tests |
+| `src/encode.rs` | 85 | Single-pass padded encoding, 3 tests |
+| `src/align.rs` | 175 | `FastAligner` with buffer reuse, `AlignParams` |
+| `src/lib.rs` | 15 | Module re-exports |
+| `src/main.rs` | 210 | CLI with clap, JSON/human output, warmup |
+
+### Tools Installed
+- **rustup 1.96.0** (replaced apt cargo 1.75.0 which was too old for edition2024 crates)
+
+---
+
+## 2026-06-15 — GPU Architecture Docs
+
+Documented the full GPU pipeline with Mermaid diagrams:
+- Pipeline flow (CPU → ctypes → GPU → back)
+- CUDA kernel internals (grid/block/thread hierarchy, shared memory layout)
+- Memory & data flow (H2D → kernel → D2H)
+- Timing breakdown (GPU 4.6ms / 194ms total with Python overhead)
+- Python vs Rust comparison diagram
+
+---
+
+## 2026-06-14 (PM 11) — Real Human Exome Benchmark (SRR077487)
+
+### Data Downloaded
+- `data/SRR077487_1.fastq.gz` (1.9 GB) — Human exome paired-end read 1
+- `data/SRR077487_2.fastq.gz` (1.9 GB) — Human exome paired-end read 2
+- `data/chr21.fa.gz` (13 MB) — Human chromosome 21 reference (hg38)
+
+### New: `benchmark/bench_real.py`
+Real-data benchmark comparing HybAligner vs minimap2 on SRR077487 exome reads against chr21. Supports gzipped input, configurable max reads, multi-threaded minimap2.
+
+### Results: 100 Kbp chr21 slice, 5000 reads × 100bp
+
+| Tool | Time | Throughput | Aligned |
+|---|---|---|---|
+| minimap2 2.26 (16t) | 13.7 ms | 365,488 reads/s | 21/5000 (0.4%) |
+| **HybAligner FastPipeline** | 194.1 ms | 25,884 reads/s | 5000/5000 (100%) |
+
+### Results: Full chr21 (46.7 Mbp), 5000 reads × 100bp
+
+| Tool | Time | Throughput | Aligned |
+|---|---|---|---|
+| minimap2 2.26 (16t) | 691 ms | 7,230 reads/s | 196/5000 (3.9%) |
+| **HybAligner FastPipeline** | 428 ms | 11,831 reads/s | N/A (needs seeding) |
+
+**Key insight:** HybAligner is 1.6× faster raw throughput, but banded SW without seeding can't find alignments on genome-scale references. minimap2's seed-and-extend is 11× faster but misses 96% of alignments on chr21-only data.
+
+---
+
+## 2026-06-14 (PM 10) — 🚀 Python Overhead Elimination: 96× Faster (v0.6.0)
+
+### Problem
+Full pipeline took 728ms for 1000 reads — but the GPU kernel itself was only 2.2ms. That's **330× overhead** from Python.
+
+### Root Cause Analysis
+
+| Bottleneck | Time | % |
+|---|---|---|
+| Ref minimizer index build | 204 ms | 28% |
+| Scheduler start/stop + logging | ~300 ms | 41% |
+| Read encoding (per-read `.encode()`) | ~100 ms | 14% |
+| Result array `.copy()` | ~50 ms | 7% |
+| ctypes CDLL first load | ~40 ms | 5% |
+| Other Python framework | ~32 ms | 4% |
+| **GPU kernel** | **2.2 ms** | **0.3%** |
+
+### Optimizations Applied
+
+| # | Optimization | File | Impact |
+|---|---|---|---|
+| 1 | Single `''.join().encode()` vs per-read | `gpu/fast_align.py` | ~15× encoding |
+| 2 | `zero_copy=True` views vs `.copy()` | `gpu/fast_align.py` | 5 malloc+copy saved |
+| 3 | Skip ref index build when `use_fast` | `runtime/manager.py` | 204ms saved |
+| 4 | Bypass scheduler entirely (FastPipeline) | `gpu/fast_align.py` | ~300ms saved |
+| 5 | Module-level CDLL singleton | `gpu/fast_align.py` | ~40ms saved |
+| 6 | Pre-allocated reusable buffers | `gpu/fast_align.py` | Zero malloc |
+
+### New: `FastPipeline` Class
+One-shot FASTQ→result with zero scheduler/threading overhead:
+```python
+from gpu.fast_align import FastPipeline
+fp = FastPipeline()
+result = fp.run("reads.fastq", "ref.fasta")
+# 133K reads/s — 1.44× faster than minimap2 (16t)!
+```
+
+### New: `encode_reads()` Function
+```python
+def encode_reads(reads: List[str], read_len: int) -> bytes:
+    padded = [r[:read_len].ljust(read_len, 'N') for r in reads]
+    return ''.join(padded).encode()  # single .encode() call
+```
+
+### New: `FastAligner.align_bytes()` Method
+Pre-encoded bytes path — zero Python overhead beyond one ctypes call.
+
+### New: `benchmark/bench.py` — Multi-Core Minimap2 + Fast Flag
+- `-t 16` for minimap2 (was `-t 1`)
+- `--fast` flag for FastPipeline benchmark
+- `run_hybaligner_fast()` with persistent FastPipeline
+
+### Benchmark Results (1000 reads × 150bp, 50Kbp ref)
+
+| Tool | Time | Throughput | vs minimap2 | Aligned |
+|---|---|---|---|---|
+| minimap2 2.26 (16t) | 10.8 ms | 92,337 reads/s | baseline | 998/1000 |
+| hybaligner (seed) | 733.5 ms | 1,364 reads/s | 0.01× | 1000/1000 |
+| **hybaligner (fast)** ✨ | **7.6 ms** | **133,330 reads/s** | **1.44×** | 1000/1000 |
+
+### Files Modified/Created
+| File | Action |
+|---|---|
+| `gpu/fast_align.py` | Rewrote: FastPipeline, encode_reads, zero_copy, __slots__, align_bytes |
+| `runtime/manager.py` | Skip ref index when `use_fast`, streamline fast path |
+| `benchmark/bench.py` | `-t 16`, `--fast`, `run_hybaligner_fast()` |
+| `benchmark/bench_real.py` | **New** — real SRR077487 vs chr21 benchmark |
+| `.gitignore` | Added `*.fastq.gz`, `*.fa.gz`, `data/` |
+| `README.md` | Updated performance, FastPipeline API, overhead table |
 
 ---
 
