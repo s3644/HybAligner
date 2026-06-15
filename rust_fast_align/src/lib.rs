@@ -26,6 +26,7 @@ pub mod cuda;
 pub mod encode;
 pub mod fastq;
 pub mod seed;
+pub mod wgs;
 
 // Re-exports
 pub use align::{AlignParams, FastAligner};
