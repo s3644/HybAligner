@@ -38,11 +38,11 @@ from gpu.wgs_align import ChunkIndex
 # Read-type parameter presets
 # ---------------------------------------------------------------------------
 READ_PRESETS = {
-    "ont": {        # Oxford Nanopore — high error (5-15%)
+    "ont": {        # Oxford Nanopore — GB10 optimized band
         "kmer": 21,
         "window": 15,
-        "band_width_factor": 0.015,  # bw = read_len × 1.5% (150bp for 10K read)
-        "anchor_window_factor": 0.5,  # window = read_len × 0.5
+        "band_width_factor": 0.008,  # 80bp for 10K read (GB10: 96 threads at bw=50)
+        "anchor_window_factor": 0.5,
         "min_chain_score": 0,
         "max_chain_gap": 10000,
     },
@@ -241,12 +241,11 @@ class LongReadAligner(HybridAligner):
         elif avg_len > 1000:
             params["kmer"] = max(params["kmer"], 19)
 
-        # Band width: proportional to read length and error rate
-        # For ONT: ~1.5% of read length (150bp for 10Kbp read)
-        # Cap at 300 (shared memory: 6 × 601 × 4 = 14KB per thread at bw=300)
+        # Band width cap for GB10 shared memory (228KB/SM):
+        # bw=50: 96 threads/block, bw=80: 60 threads/block, bw=100: 48 threads/block
         params["band_width"] = max(
             50,
-            min(300, int(avg_len * params["band_width_factor"])),
+            min(80, int(avg_len * params["band_width_factor"])),
         )
 
         # Anchor window: wider for long reads (more uncertainty)
