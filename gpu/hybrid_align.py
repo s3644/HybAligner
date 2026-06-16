@@ -47,6 +47,10 @@ class HybridAligner(WgsAligner):
         super().__init__(chunk_size, overlap)
         self.n_workers = n_workers if n_workers > 0 else (os.cpu_count() or 4)
 
+    def _get_full_ref(self) -> str:
+        """Reconstruct full reference from chunks."""
+        return ''.join(c.ref_seq for c in self.chunks) if self.chunks else ''
+
     # ------------------------------------------------------------------
     # Parallel alignment
     # ------------------------------------------------------------------
@@ -80,14 +84,12 @@ class HybridAligner(WgsAligner):
         read_len = max(len(r) for r in reads) if reads else 0
         parse_ms = (time.perf_counter() - t_parse) * 1000
 
-        # ── Parallel Seeding (CPU) ─────────────────
+        # ── Seeding (CPU parallel, ThreadPool) ─────
         t_seed = time.perf_counter()
-        read_batches = _split_batches(reads, batch_size)
+        read_anchors: List[Optional[Tuple[int, int]]] = [None] * n_reads
         n_seeded = 0
 
-        # Per-read results: (read_idx, anchor_read_pos, anchor_ref_pos)
-        read_anchors: List[Optional[Tuple[int, int]]] = [None] * n_reads
-
+        read_batches = _split_batches(reads, batch_size)
         with ThreadPoolExecutor(max_workers=self.n_workers) as pool:
             futures = {}
             for batch_idx, batch_reads in enumerate(read_batches):
@@ -97,10 +99,8 @@ class HybridAligner(WgsAligner):
                     batch_reads, start_idx, self.chunks, read_len,
                 )
                 futures[future] = batch_idx
-
             for future in as_completed(futures):
-                batch_results = future.result()
-                for read_idx, anchor in batch_results:
+                for read_idx, anchor in future.result():
                     read_anchors[read_idx] = anchor
                     if anchor is not None:
                         n_seeded += 1
