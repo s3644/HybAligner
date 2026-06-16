@@ -2,7 +2,43 @@
 
 **Project:** Hybrid CPU-GPU Sequence Aligner for DGX Spark  
 **Repository:** `/home/jukrapope/Documents/HybAligner`  
-**Last Updated:** 2026-06-15 (PM 8)
+**Last Updated:** 2026-06-16
+
+---
+
+## 2026-06-16 — 🧬 v1.0.0: LongReadAligner — GPU-Optimized for ONT/PacBio
+
+### ONT Synthetic Benchmark (500 reads, 10Kbp avg, 10% error)
+
+| Version | Total | Reads/s | Seed | Chain | GPU | Aligned |
+|---|---|---|---|---|---|---|
+| v0.1 (bw=500, sequential) | 8,134ms | 62 | 698ms | 965ms | 6,181ms | 100% |
+| v0.2 (adaptive bw=151) | 2,765ms | 181 | 897ms | 944ms | 657ms | 100% |
+| **v1.0 (all parallel)** | **1,914ms** | **261** | **971ms** | **2ms** | **658ms** | **100%** |
+
+### Auto Parameters
+
+| Read Type | k-mer | Band Width | Best For |
+|---|---|---|---|
+| ONT | 21 | len × 1.5% | High-error nanopore |
+| PacBio HiFi | 19 | len × 3% | Low-error circular consensus |
+| PacBio CLR | 19 | len × 12% | Moderate-error continuous |
+
+### Key Optimizations
+
+- Band=500→151: adaptive formula, 9.4× GPU speedup
+- Chain: sequential→parallel (16 threads), 472× faster
+- Key insight: re-query chunk in thread > cross-thread pickle serialization
+
+### Scaling (HybAligner vs minimap2)
+
+| Reference | minimap2 | HybAligner | Gap |
+|---|---|---|---|
+| 100 Kbp | 6,294 r/s | 261 r/s | 24× |
+| 47 Mbp | 14,043 r/s | **2,377 r/s** | **5.9×** ✅ |
+| 3.2 Gbp | ~10,000 r/s | ~500 r/s | ~20× |
+
+> **Best at 10-100 Mbp** where GPU SW dominates. WGS bottleneck: 8-mer scan across 320 chunks.
 
 ---
 
