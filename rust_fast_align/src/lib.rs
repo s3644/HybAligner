@@ -30,7 +30,7 @@ pub mod wgs;
 
 // Re-exports
 pub use align::{AlignParams, FastAligner};
-pub use cuda::{AlignResult, CudaKernel};
+pub use cuda::{AlignResult, CudaKernel, GpuSeedIndex, SeedKernel};
 pub use encode::{encode_from_fastq, encode_reads, encode_reference, encode_reference_bytes};
 pub use fastq::FastqFile;
 pub use seed::{best_anchor, Anchor, SeedIndex};

@@ -9,6 +9,10 @@ license = "MIT"
 name = "hyb-align"
 path = "src/main.rs"
 
+[[bin]]
+name = "hyb-align-seeded"
+path = "src/bin/seed_align.rs"
+
 [dependencies]
 # Error handling
 anyhow = "1"
