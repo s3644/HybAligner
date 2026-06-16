@@ -115,14 +115,20 @@ class GPUSeedingPipeline:
         best_rp = np.full(n_reads, -1, dtype=np.int32)
         best_fp = np.full(n_reads, -1, dtype=np.int32)
 
-        for i in range(n_reads):
-            n = int(ac[i])
-            if n == 0:
-                continue
-            # arp shape: (n_reads * max_anchors,) — flat
-            base = i * max_anchors
-            best_rp[i] = int(arp[base])
-            best_fp[i] = int(afp[base])
+        # Handle both flat and 2D array shapes
+        if arp.ndim == 2:
+            for i in range(n_reads):
+                if int(ac[i]) == 0:
+                    continue
+                best_rp[i] = int(arp[i, 0])
+                best_fp[i] = int(afp[i, 0])
+        else:
+            for i in range(n_reads):
+                if int(ac[i]) == 0:
+                    continue
+                base = i * max_anchors
+                best_rp[i] = int(arp[base])
+                best_fp[i] = int(afp[base])
 
         return best_rp, best_fp
 
@@ -145,16 +151,17 @@ def benchmark_gpu_seeding():
     print("\n── GPU Seeding Pipeline ──")
     gpu = GPUSeedingPipeline()
     t0 = time.perf_counter()
-    ref_idx = gpu.build_ref_index(ref, k=15, w=10)
+    ref_idx = gpu.build_ref_index(ref, k=8, w=5)
     build_ms = (time.perf_counter() - t0) * 1000
-    print(f"  Ref index: {ref_idx['n_mins']} minimizers ({build_ms:.0f}ms)")
+    print(f"  Ref index (k=8): {ref_idx['n_mins']} minimizers ({build_ms:.0f}ms)")
 
+    # GPU seeding with k=8 (higher sensitivity for short reads)
     read_len = max(len(r) for r in reads)
     t0 = time.perf_counter()
-    brp, bfp = gpu.seed_batch_gpu(reads, read_len, ref_idx, k=15, w=10)
+    brp, bfp = gpu.seed_batch_gpu(reads, read_len, ref_idx, k=8, w=5)
     seed_ms = (time.perf_counter() - t0) * 1000
     n_seeded = int(np.sum(brp >= 0))
-    print(f"  Seed batch: {n_seeded}/{len(reads)} reads ({seed_ms:.0f}ms)")
+    print(f"  Seed batch (k=8): {n_seeded}/{len(reads)} reads ({seed_ms:.0f}ms)")
 
     # CPU seeding (for comparison)
     print("\n── CPU Seeding (Python dict) ──")
