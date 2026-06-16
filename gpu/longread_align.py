@@ -354,35 +354,33 @@ class LongReadAligner(HybridAligner):
 
         seed_ms = (time.perf_counter() - t_seed) * 1000
 
-        # ── Chaining (long-read specific) ──────────
+        # ── Chaining (parallel, re-queries per thread) ─
         if use_chaining and params['avg_len'] > 500:
             t_chain = time.perf_counter()
+
+            chain_tasks = []
             for chunk in self.chunks:
-                # Collect all anchors for this chunk
-                chunk_anchors: Dict[int, List[Tuple[int, int]]] = {}
                 for i, anchor in enumerate(read_anchors):
                     if anchor is None:
                         continue
                     rp, fp = anchor
                     if chunk.ref_start <= fp < chunk.ref_end:
-                        # Get ALL anchors for this read from the chunk (not just best)
-                        read = reads[i]
-                        all_anchors = chunk.query(read, k8=8, k15=kmer, w15=window_w)
-                        chunk_anchors[i] = all_anchors
+                        chain_tasks.append((
+                            i, reads[i], chunk, kmer, window_w,
+                            max_chain_gap, params["min_chain_score"],
+                        ))
+                        break
 
-                # Chain each read's anchors and pick best
-                for read_idx, anchors in chunk_anchors.items():
-                    if len(anchors) <= 1:
-                        continue
-                    read_len_i = len(reads[read_idx])
-                    chain = chain_anchors_longread(
-                        anchors,
-                        max_gap=max_chain_gap,
-                        min_score=params["min_chain_score"],
-                    )
-                    best = best_anchor_from_chain(chain, read_len_i)
-                    if best is not None:
-                        read_anchors[read_idx] = best
+            if chain_tasks:
+                with ThreadPoolExecutor(max_workers=self.n_workers) as pool:
+                    chain_futures = {
+                        pool.submit(_chain_single_read, task): task[0]
+                        for task in chain_tasks
+                    }
+                    for future in as_completed(chain_futures):
+                        read_idx, best = future.result()
+                        if best is not None:
+                            read_anchors[read_idx] = best
 
             chain_ms = (time.perf_counter() - t_chain) * 1000
         else:
@@ -482,6 +480,32 @@ class LongReadAligner(HybridAligner):
 # ---------------------------------------------------------------------------
 # Worker function (module-level for pickling)
 # ---------------------------------------------------------------------------
+def _chain_single_read(
+    task: Tuple[int, str, ChunkIndex, int, int, int, float],
+) -> Tuple[int, Optional[Tuple[int, int]]]:
+    """Chain anchors for a single read (re-queries chunk in thread)."""
+    read_idx, read, chunk, kmer, window_w, max_chain_gap, min_score = task
+    all_anchors = chunk.query(read, k8=8, k15=kmer, w15=window_w)
+    if len(all_anchors) <= 1:
+        return (read_idx, all_anchors[0] if all_anchors else None)
+    chain = chain_anchors_longread(all_anchors, max_gap=max_chain_gap, min_score=min_score)
+    best = best_anchor_from_chain(chain, len(read))
+    return (read_idx, best)
+
+
+# Keep cached version for future use
+def _chain_single_read_cached(
+    task: Tuple[int, int, List[Tuple[int, int]], int, float],
+) -> Tuple[int, Optional[Tuple[int, int]]]:
+    """Chain using pre-computed anchors (no re-query)."""
+    read_idx, read_len_i, all_anchors, max_chain_gap, min_score = task
+    if len(all_anchors) <= 1:
+        return (read_idx, all_anchors[0] if all_anchors else None)
+    chain = chain_anchors_longread(all_anchors, max_gap=max_chain_gap, min_score=min_score)
+    best = best_anchor_from_chain(chain, read_len_i)
+    return (read_idx, best)
+
+
 def _seed_batch_longread(
     reads: List[str],
     start_idx: int,
@@ -489,14 +513,11 @@ def _seed_batch_longread(
     kmer: int = 21,
     window_w: int = 15,
 ) -> List[Tuple[int, Optional[Tuple[int, int]]]]:
-    """Seed a batch of long reads — returns ALL anchors per read.
-
-    For long reads, we need ALL anchors (not just best) for chaining.
-    """
+    """Seed a batch — returns (read_idx, best_anchor). Fast path only."""
     results = []
     for i, read in enumerate(reads):
         read_idx = start_idx + i
-        all_anchors = []
+        all_anchors: List[Tuple[int, int]] = []
         for chunk in chunks:
             anchors = chunk.query(read, k8=8, k15=kmer, w15=window_w)
             all_anchors.extend(anchors)
@@ -505,9 +526,6 @@ def _seed_batch_longread(
             results.append((read_idx, None))
             continue
 
-        # Return all anchors, not just best (chaining needs all)
-        # But for the seeded count, we mark as seeded
-        # Best anchor via diagonal consensus (fast pre-filter)
         diag_counts: Dict[int, int] = {}
         for rp, fp in all_anchors:
             d = fp - rp
